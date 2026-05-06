@@ -70,13 +70,34 @@ CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
    - You will be asked if you want to proceed with the unfollow process.
    - If you agree, the script will visit each profile and ask for confirmation before unfollowing.
 
+## Build a Windows `.exe`
+
+The application can be packaged with PyInstaller. The generated executable will use the values embedded in `config.py`, so update `USERNAME`, `INSTAGRAM`, `COOKIES_FILE`, and `CHROME_PATH` before building. If you change `config.py` later, rebuild the executable.
+
+1. **Install PyInstaller in the Poetry environment**:
+   ```powershell
+   poetry add --group dev pyinstaller
+   ```
+
+2. **Build the executable**:
+   ```powershell
+   poetry run pyinstaller --noconfirm --clean --onefile --name InstaFollow --collect-all playwright --collect-all playwright_stealth main.py
+   ```
+
+3. **Run the generated file**:
+   ```powershell
+   .\dist\InstaFollow.exe
+   ```
+
+Runtime files such as `cookies.json`, `log.txt`, and `non_followers.txt` are created in the folder where you run the executable. Keep Chrome installed at the path configured in `CHROME_PATH`; this project launches your local Chrome instead of bundling a browser.
+
 ## Project Structure
 
 - `main.py`: Entry point of the application.
 - `browser.py`: Playwright browser and context setup with stealth mode.
 - `config.py`: Global configuration and constants.
 - `cookies.py`: Logic for saving and loading session cookies.
-- `instagram.py`: High-level interactions to navigate to follower/following lists.
+- `instagram.py`: Collects followers/following through Instagram's API, with DOM scrolling as fallback.
 - `scroll.py`: Advanced scrolling logic to collect all users from Instagram's dynamic lists.
 - `unfollow.py`: Logic for visiting profiles and performing the unfollow action.
 - `utils.py`: Logging setup and human-like delay functions.
