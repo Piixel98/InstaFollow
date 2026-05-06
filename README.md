@@ -51,19 +51,24 @@ CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
 ## How to Run
 
-1. **Execute the main script**:
+1. **Run the desktop UI**:
+   ```bash
+   poetry run python gui.py
+   ```
+
+2. **Or run the console script**:
    ```bash
    poetry run python main.py
    ```
 
-2. **Initial Login**:
+3. **Initial Login**:
    - If no valid cookies are found, a Chrome window will open.
    - Log in manually to your Instagram account.
    - Complete any Two-Factor Authentication (2FA) if required.
    - Once you are on your Instagram feed, return to the terminal and press **ENTER**.
    - Your session (cookies) will be saved for future runs.
 
-3. **Process**:
+4. **Process**:
    - The script will start collecting your followers and following lists (this may take some time depending on your account size).
    - It will display a list of users who don't follow you back.
    - A `non_followers.txt` file will be created.
@@ -81,7 +86,7 @@ The application can be packaged with PyInstaller. The generated executable will 
 
 2. **Build the executable**:
    ```powershell
-   poetry run pyinstaller --noconfirm --clean --onefile --name InstaFollow --collect-all playwright --collect-all playwright_stealth main.py
+   poetry run pyinstaller --noconfirm --clean --onefile --windowed --name InstaFollow --collect-all playwright --collect-all playwright_stealth --collect-all PySide6 gui.py
    ```
 
 3. **Run the generated file**:
@@ -91,9 +96,13 @@ The application can be packaged with PyInstaller. The generated executable will 
 
 Runtime files such as `cookies.json`, `log.txt`, and `non_followers.txt` are created in the folder where you run the executable. Keep Chrome installed at the path configured in `CHROME_PATH`; this project launches your local Chrome instead of bundling a browser.
 
+The desktop UI attempts to embed the Playwright-controlled Chrome window inside the app on Windows when `pywin32` is available. If it is not installed or no compatible wheel exists for your Python version, Chrome remains in its own window and the automation still works.
+
 ## Project Structure
 
 - `main.py`: Entry point of the application.
+- `gui.py`: Desktop UI entry point.
+- `ui/`: PySide6 interface, worker thread, embedded-browser host, styles, and log bridge.
 - `browser.py`: Playwright browser and context setup with stealth mode.
 - `config.py`: Global configuration and constants.
 - `cookies.py`: Logic for saving and loading session cookies.
