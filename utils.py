@@ -4,6 +4,20 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+
+
+LOGS_DIR = Path("logs")
+CURRENT_LOG_FILE = None
+
+
+def latest_log_file():
+    if not LOGS_DIR.exists():
+        return None
+
+    logs = sorted(LOGS_DIR.glob("instafollow-*.log"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return logs[0] if logs else None
 
 
 class Spinner:
@@ -44,6 +58,8 @@ class Spinner:
 
 
 def setup_logging():
+    global CURRENT_LOG_FILE
+
     logger = logging.getLogger("InstaFollow")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
@@ -51,7 +67,10 @@ def setup_logging():
     if logger.handlers:
         return logger
 
-    file_handler = logging.FileHandler("log.txt", encoding="utf-8")
+    LOGS_DIR.mkdir(exist_ok=True)
+    CURRENT_LOG_FILE = LOGS_DIR / f"instafollow-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+
+    file_handler = logging.FileHandler(CURRENT_LOG_FILE, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
 
@@ -104,31 +123,3 @@ def human_sleep(a=0.7, b=1.8):
 
 def long_pause(message="Esperando unos segundos antes de continuar"):
     wait_with_spinner(random.uniform(3, 6), message)
-
-
-def handle_cookie_consent(page, timeout_ms=5000):
-    logger = logging.getLogger("InstaFollow")
-    button_labels = (
-        "Rechazar cookies opcionales",
-        "Permitir todas las cookies",
-        "Reject optional cookies",
-        "Decline optional cookies",
-        "Allow all cookies",
-        "Only allow essential cookies",
-    )
-
-    for index, label in enumerate(button_labels):
-        wait_ms = timeout_ms if index == 0 else 700
-
-        try:
-            button = page.get_by_role("button", name=label).first
-            button.wait_for(state="visible", timeout=wait_ms)
-            button.click(timeout=2000)
-            logger.info("Cookie dialog closed with button: %s", label)
-            human_sleep(0.4, 1.0)
-            return True
-        except Exception:
-            continue
-
-    logger.debug("Cookie dialog not found")
-    return False
