@@ -14,6 +14,8 @@ class QtLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
+            if getattr(record, "user_visible", True) is False:
+                return
             message = self.format(record)
             self.emitter.message.emit(record.levelname.lower(), message)
         except Exception:
