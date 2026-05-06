@@ -3,57 +3,82 @@ from config import INSTAGRAM
 from cookies import load_cookies, save_cookies
 from instagram import get_users
 from unfollow import unfollow_users
-from utils import long_pause, setup_logging
+from utils import (
+    handle_cookie_consent,
+    loading,
+    long_pause,
+    setup_logging,
+    user_info,
+    user_success,
+    user_warning,
+)
+
 
 def main():
     logger = setup_logging()
-    pw, browser, context, page = get_browser_context()
-    
-    try:
-        logger.info("🌐 Accessing Instagram...")
-        page.goto(INSTAGRAM)
+    user_info("InstaFollow iniciado.")
 
-        cookies_loaded = load_cookies(context)
+    with loading("Abriendo Chrome", "Chrome abierto"):
+        pw, browser, context, page = get_browser_context()
+
+    try:
+        with loading("Cargando Instagram", "Instagram cargado"):
+            page.goto(INSTAGRAM)
+            handle_cookie_consent(page)
+
+        with loading("Comprobando sesion guardada"):
+            cookies_loaded = load_cookies(context)
 
         if not cookies_loaded:
-            logger.info("🔐 No valid cookies found")
-            logger.info("- Log in manually")
-            logger.info("- Complete 2FA if applicable")
-            logger.info("- When you see your feed, press ENTER here")
-            input()
-            save_cookies(context)
+            user_warning("No hay una sesion guardada.")
+            user_info("Inicia sesion manualmente en la ventana de Chrome.")
+            user_info("Completa 2FA si Instagram lo solicita.")
+            input("Cuando veas tu feed, pulsa ENTER aqui para continuar...")
+
+            with loading("Guardando sesion", "Sesion guardada"):
+                save_cookies(context)
         else:
-            page.goto(INSTAGRAM)
+            user_success("Sesion restaurada desde cookies.")
+            with loading("Preparando sesion de Instagram", "Sesion preparada"):
+                page.goto(INSTAGRAM)
+                handle_cookie_consent(page)
 
-        followers = get_users(page, "followers")
-        logger.info(f"Followers: {len(followers)}")
+        with loading("Cargando seguidores", "Seguidores cargados"):
+            followers = get_users(page, "followers")
+        user_success(f"Seguidores encontrados: {len(followers)}")
 
-        long_pause()
+        long_pause("Pausa breve antes de cargar seguidos")
 
-        following = get_users(page, "following")
-        logger.info(f"Following: {len(following)}")
+        with loading("Cargando cuentas que sigues", "Cuentas cargadas"):
+            following = get_users(page, "following")
+        user_success(f"Cuentas que sigues: {len(following)}")
 
         diff = following - followers
+        logger.debug("%s users do not follow back", len(diff))
 
-        logger.debug(f"\n👀 Users you follow and DON'T follow you back ({len(diff)}):")
-        for u in sorted(diff):
-            logger.info(f"- {u}")
+        if not diff:
+            user_success("No se han encontrado cuentas que no te sigan de vuelta.")
+            return
 
-        if diff:
+        with loading("Generando non_followers.txt", "Archivo generado"):
             with open("non_followers.txt", "w", encoding="utf-8") as f:
-                for u in sorted(diff):
-                    f.write(u + "\n")
-            logger.info("\n📄 'non_followers.txt' file generated with users who don't follow you back.")
-            
-            confirm = input(f"\n⚠️ Do you want to proceed and unfollow these {len(diff)} users? (y/n): ").lower()
-            if confirm == 'y':
-                unfollow_users(page, sorted(diff))
-            else:
-                logger.info("🚫 Unfollow process cancelled by user.")
+                for username in sorted(diff):
+                    f.write(username + "\n")
+
+        user_info(f"Cuentas que no te siguen de vuelta: {len(diff)}")
+        user_info("Resultado guardado en non_followers.txt.")
+
+        confirm = input(f"Quieres revisar y dejar de seguir estas {len(diff)} cuentas? [y/n]: ").strip().lower()
+        if confirm == "y":
+            unfollow_users(page, sorted(diff))
+        else:
+            user_info("Proceso de unfollow cancelado.")
 
     finally:
-        browser.close()
-        pw.stop()
+        with loading("Cerrando navegador", "Navegador cerrado"):
+            browser.close()
+            pw.stop()
+
 
 if __name__ == "__main__":
     main()
