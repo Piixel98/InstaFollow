@@ -24,3 +24,20 @@ def load_cookies(context):
 
     context.add_cookies(cookies)
     return True
+
+
+def delete_saved_cookies(context=None):
+    deleted = False
+
+    if context is not None:
+        try:
+            context.clear_cookies()
+        except Exception as exc:
+            logger.debug("Could not clear browser context cookies: %s", exc)
+
+    if os.path.exists(COOKIES_FILE):
+        os.remove(COOKIES_FILE)
+        deleted = True
+        logger.info("Cookies file deleted")
+
+    return deleted

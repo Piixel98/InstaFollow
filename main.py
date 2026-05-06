@@ -1,6 +1,6 @@
 from browser import get_browser_context
 from config import INSTAGRAM
-from cookies import load_cookies, save_cookies
+from cookies import delete_saved_cookies, load_cookies, save_cookies
 from instagram import get_users
 from unfollow import unfollow_users
 from utils import (
@@ -12,6 +12,28 @@ from utils import (
     user_success,
     user_warning,
 )
+
+
+def confirm_cookie_cleanup(context):
+    user_warning("Aviso de seguridad sobre cookies.")
+    user_info("Mantener cookies permite restaurar tu sesion en proximas ejecuciones.")
+    user_info("Eliminar cookies mejora la privacidad en este equipo, pero tendras que iniciar sesion otra vez.")
+
+    while True:
+        choice = input("Quieres eliminar las cookies guardadas de Instagram? [y/n]: ").strip().lower()
+        if choice in ("y", "n"):
+            break
+        user_info("Responde 'y' para eliminarlas o 'n' para mantenerlas.")
+
+    if choice == "y":
+        with loading("Eliminando cookies guardadas"):
+            deleted = delete_saved_cookies(context)
+        if deleted:
+            user_success("Cookies eliminadas del equipo.")
+        else:
+            user_info("No habia archivo de cookies guardado.")
+    else:
+        user_warning("Cookies mantenidas en el equipo. Protege este dispositivo y no compartas cookies.json.")
 
 
 def main():
@@ -75,6 +97,7 @@ def main():
             user_info("Proceso de unfollow cancelado.")
 
     finally:
+        confirm_cookie_cleanup(context)
         with loading("Cerrando navegador", "Navegador cerrado"):
             browser.close()
             pw.stop()
