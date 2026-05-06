@@ -1,4 +1,6 @@
-USERNAME = "jsm1998"
+USERNAME = "username"
 INSTAGRAM = "https://www.instagram.com"
 COOKIES_FILE = "cookies.json"
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+INSTAGRAM_APP_ID = "936619743392459"
+INSTAGRAM_API_BASE = "https://www.instagram.com/api/v1"

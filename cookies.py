@@ -26,6 +26,19 @@ def load_cookies(context):
     return True
 
 
+def has_valid_cookies():
+    if not os.path.exists(COOKIES_FILE):
+        return False
+
+    try:
+        with open(COOKIES_FILE, "r", encoding="utf-8") as f:
+            cookies = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    return isinstance(cookies, list) and bool(cookies)
+
+
 def delete_saved_cookies(context=None):
     deleted = False
 
