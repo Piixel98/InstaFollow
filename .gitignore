@@ -155,3 +155,4 @@ cookies.json
 chrome_profile/
 non_followers.txt
 log.txt
+logs/*.log

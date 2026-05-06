@@ -10,6 +10,7 @@ InstaFollow is a modular Instagram automation tool built with Python and Playwri
 - **Manual Confirmation**: Prompts for confirmation before proceeding with the unfollow process.
 - **Stealth Mode**: Uses `playwright-stealth` and human-like delays to minimize detection risks.
 - **Reporting**: Generates a `non_followers.txt` file with the list of identified users.
+- **Desktop UI**: Dark PySide6 interface with English/Spanish UI language selection and detailed logs.
 
 ## Prerequisites
 
@@ -86,7 +87,7 @@ The application can be packaged with PyInstaller. The generated executable will 
 
 2. **Build the executable**:
    ```powershell
-   poetry run pyinstaller --noconfirm --clean --onefile --windowed --name InstaFollow --collect-all playwright --collect-all playwright_stealth --collect-all PySide6 gui.py
+   poetry run pyinstaller --noconfirm --clean InstaFollow.spec
    ```
 
 3. **Run the generated file**:
@@ -94,15 +95,16 @@ The application can be packaged with PyInstaller. The generated executable will 
    .\dist\InstaFollow.exe
    ```
 
-Runtime files such as `cookies.json`, `log.txt`, and `non_followers.txt` are created in the folder where you run the executable. Keep Chrome installed at the path configured in `CHROME_PATH`; this project launches your local Chrome instead of bundling a browser.
+Runtime files such as `cookies.json`, `non_followers.txt`, and timestamped files under `logs/` are created in the folder where you run the executable. Keep Chrome installed at the path configured in `CHROME_PATH`; this project launches your local Chrome instead of bundling a browser.
 
-The desktop UI attempts to embed the Playwright-controlled Chrome window inside the app on Windows when `pywin32` is available. If it is not installed or no compatible wheel exists for your Python version, Chrome remains in its own window and the automation still works.
+The desktop UI embeds only the Playwright-controlled Chrome window inside the app on Windows. If embedding fails, the browser is kept hidden instead of being shown as a separate window.
 
 ## Project Structure
 
 - `main.py`: Entry point of the application.
 - `gui.py`: Desktop UI entry point.
 - `ui/`: PySide6 interface, worker thread, embedded-browser host, styles, and log bridge.
+- `assets/`: Application icon and bundled UI assets.
 - `browser.py`: Playwright browser and context setup with stealth mode.
 - `config.py`: Global configuration and constants.
 - `cookies.py`: Logic for saving and loading session cookies.
