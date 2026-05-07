@@ -12,11 +12,17 @@ LOGS_DIR = Path("logs")
 CURRENT_LOG_FILE = None
 
 
-def latest_log_file():
-    if not LOGS_DIR.exists():
+def set_logs_dir(path):
+    global LOGS_DIR
+    LOGS_DIR = Path(path or "logs")
+
+
+def latest_log_file(logs_dir=None):
+    directory = Path(logs_dir) if logs_dir else LOGS_DIR
+    if not directory.exists():
         return None
 
-    logs = sorted(LOGS_DIR.glob("instafollow-*.log"), key=lambda path: path.stat().st_mtime, reverse=True)
+    logs = sorted(directory.glob("instafollow-*.log"), key=lambda path: path.stat().st_mtime, reverse=True)
     return logs[0] if logs else None
 
 
@@ -57,17 +63,30 @@ class Spinner:
             time.sleep(self.interval)
 
 
-def setup_logging():
+def setup_logging(logs_dir=None):
     global CURRENT_LOG_FILE
+    if logs_dir:
+        set_logs_dir(logs_dir)
 
     logger = logging.getLogger("InstaFollow")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
     if logger.handlers:
+        if logs_dir:
+            for handler in list(logger.handlers):
+                if isinstance(handler, logging.FileHandler):
+                    logger.removeHandler(handler)
+                    handler.close()
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            CURRENT_LOG_FILE = LOGS_DIR / f"instafollow-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+            file_handler = logging.FileHandler(CURRENT_LOG_FILE, encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+            logger.addHandler(file_handler)
         return logger
 
-    LOGS_DIR.mkdir(exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
     CURRENT_LOG_FILE = LOGS_DIR / f"instafollow-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
 
     file_handler = logging.FileHandler(CURRENT_LOG_FILE, encoding="utf-8")
