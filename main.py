@@ -64,6 +64,14 @@ def prompt_security_code():
     return input("Codigo de seguridad/2FA: ").strip()
 
 
+def prompt_target_username():
+    while True:
+        username = input("Usuario de Instagram a revisar (@instagram): ").strip().lstrip("@").strip("/")
+        if username:
+            return username
+        user_warning("El usuario de Instagram a revisar es obligatorio.")
+
+
 def run_automatic_login(page):
     while True:
         credentials = prompt_credentials()
@@ -126,14 +134,16 @@ def main():
             with loading("Guardando sesion", "Sesion guardada"):
                 save_cookies(context)
 
+        target_username = prompt_target_username()
+
         with loading("Cargando seguidores", "Seguidores cargados"):
-            followers = get_users(page, "followers")
+            followers = get_users(page, "followers", target_username)
         user_success(f"Seguidores encontrados: {len(followers)}")
 
         long_pause("Pausa breve antes de cargar seguidos")
 
         with loading("Cargando cuentas que sigues", "Cuentas cargadas"):
-            following = get_users(page, "following")
+            following = get_users(page, "following", target_username)
         user_success(f"Cuentas que sigues: {len(following)}")
 
         diff = following - followers
@@ -153,7 +163,7 @@ def main():
 
         confirm = input(f"Quieres revisar y dejar de seguir estas {len(diff)} cuentas? [y/n]: ").strip().lower()
         if confirm == "y":
-            unfollow_selected_users(page, sorted(diff))
+            unfollow_selected_users(page, sorted(diff), target_username)
         else:
             user_info("Proceso de unfollow cancelado.")
 

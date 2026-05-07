@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 from urllib.parse import urlencode
 
-from config import INSTAGRAM, INSTAGRAM_API_BASE, INSTAGRAM_APP_ID, USERNAME
+from config import INSTAGRAM, INSTAGRAM_API_BASE, INSTAGRAM_APP_ID
 from utils import human_sleep, long_pause
 
 logger = logging.getLogger("InstaFollow")
@@ -16,12 +16,16 @@ class InstagramStopRequested(Exception):
     pass
 
 
-def _validate_config() -> None:
+def _normalize_username(username: str) -> str:
+    return username.strip().lstrip("@").strip("/")
+
+
+def _validate_config(target_username: str | None = None) -> None:
     missing = []
     if not isinstance(INSTAGRAM, str) or not INSTAGRAM.strip():
         missing.append("INSTAGRAM")
-    if not isinstance(USERNAME, str) or not USERNAME.strip():
-        missing.append("USERNAME")
+    if not isinstance(target_username, str) or not _normalize_username(target_username):
+        missing.append("target_username")
     if not isinstance(INSTAGRAM_APP_ID, str) or not INSTAGRAM_APP_ID.strip():
         missing.append("INSTAGRAM_APP_ID")
     if not isinstance(INSTAGRAM_API_BASE, str) or not INSTAGRAM_API_BASE.strip():
@@ -70,7 +74,7 @@ def _browser_fetch(page, url: str) -> dict[str, Any] | None:
     )
 
 
-def handle_cookie_consent(page, timeout_ms=5000) -> bool:
+def handle_cookie_consent(page, timeout_ms=6_000) -> bool:
     button_labels = (
         "Rechazar cookies opcionales",
         "Permitir todas las cookies",
@@ -81,7 +85,7 @@ def handle_cookie_consent(page, timeout_ms=5000) -> bool:
     )
 
     for index, label in enumerate(button_labels):
-        wait_ms = timeout_ms if index == 0 else 700
+        wait_ms = timeout_ms if index == 0 else 750
 
         try:
             button = page.get_by_role("button", name=label).first
@@ -93,7 +97,7 @@ def handle_cookie_consent(page, timeout_ms=5000) -> bool:
         except Exception:
             continue
 
-    logger.debug("Cookie dialog not found")
+    logger.debug("Cookie dialog not found after %sms", timeout_ms)
     return False
 
 
@@ -106,19 +110,13 @@ def is_logged_in(page) -> bool:
     try:
         page.goto(INSTAGRAM, wait_until="domcontentloaded", timeout=30_000)
         handle_cookie_consent(page, timeout_ms=2500)
+        if _needs_security_code(page):
+            return False
+        if _is_login_or_challenge_url(page):
+            return False
         if _login_form_present(page, timeout=1500):
             return False
-        url = page.url.lower()
-        if "/accounts/login" in url or "/challenge" in url:
-            return False
-        return bool(
-            page.locator(
-                "a[href='/direct/inbox/'], "
-                "svg[aria-label='Inicio'], "
-                "svg[aria-label='Home'], "
-                "a[href*='/accounts/edit/']"
-            ).count()
-        )
+        return _login_success_visible(page) or _has_instagram_session_cookie(page)
     except Exception as exc:
         logger.debug("Could not verify Instagram session: %s", exc)
         return False
@@ -158,6 +156,7 @@ def login_with_credentials(
         stop_checker=stop_checker,
         timeout=15000,
     )
+    _interruptible_sleep(stop_checker, 1.2, 2.4)
     _fill_first_available(
         page,
         (
@@ -174,31 +173,40 @@ def login_with_credentials(
         stop_checker=stop_checker,
         timeout=15000,
     )
-    _interruptible_sleep(stop_checker, 0.2, 0.4)
+    _interruptible_sleep(stop_checker, 1.4, 2.8)
     try:
         _click_login_button(page, stop_checker=stop_checker, timeout=5000)
     except RuntimeError:
         if not _submit_login_form(page):
             raise
+    _interruptible_sleep(stop_checker, 1.0, 2.0)
 
     if _detect_login_error(page):
         return False
 
-    # Wait a bit for the page to potentially load the 2FA challenge
-    logger.info("Login submitted. Waiting for potential 2FA challenge...", extra={"user_visible": True})
-    _interruptible_sleep(stop_checker, 1.5, 2.5)
+    logger.info("Login submitted. Waiting for the next Instagram step...", extra={"user_visible": True})
+    next_step = _wait_for_login_next_step(page, stop_checker, timeout_seconds=10)
 
-    if _needs_security_code(page, stop_checker):
+    if next_step == "error":
+        return False
+
+    if next_step == "security_code":
         logger.info("Security code required. Requesting code from user.", extra={"user_visible": True})
+        _interruptible_sleep(stop_checker, 1.0, 2.0)
         code = security_code_provider()
         _check_stop(stop_checker)
+        _interruptible_sleep(stop_checker, 0.8, 1.6)
         logger.info("Submitting security code for Instagram login.", extra={"user_visible": True})
         _submit_security_code(page, code, stop_checker)
-        _interruptible_sleep(stop_checker, 1.5, 2.5)
-        if _detect_login_error(page):
+        code_status = _verify_security_code_result(page, stop_checker)
+        if code_status == "accepted":
+            logger.info("Security code accepted. Verifying login status.", extra={"user_visible": True})
+        elif code_status == "rejected":
             logger.warning("Security code was rejected. Login failed.", extra={"user_visible": True})
             return False
-        logger.info("Security code accepted. Verifying login status.", extra={"user_visible": True})
+        else:
+            logger.warning("Security code could not be verified. Login failed.", extra={"user_visible": True})
+            return False
 
     return _wait_until_logged_in(page, stop_checker)
 
@@ -214,7 +222,7 @@ def _open_login_form(page, stop_checker: Callable[[], None] | None = None) -> bo
         try:
             logger.info("Opening Instagram login page: %s", url)
             page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            handle_cookie_consent(page, timeout_ms=5000)
+            handle_cookie_consent(page, timeout_ms=6_000)
             if _login_form_present(page, timeout=10_000):
                 return True
             if is_logged_in(page):
@@ -267,20 +275,118 @@ def _submit_login_form(page) -> bool:
         return False
 
 
-def _detect_login_error(page) -> bool:
-    error_selector = "text=/incorrect|wrong|try again|contrase.a|incorrecta|problema|problem/i"
+def _detect_login_error(page, timeout: int = 2500) -> bool:
+    error_patterns = (
+        r"sorry, your password was incorrect",
+        r"the username you entered doesn't belong",
+        r"please check your username and try again",
+        r"incorrect password",
+        r"wrong password",
+        r"try again",
+        r"contrase(?:ñ|n)a incorrecta",
+        r"la contrase(?:ñ|n)a que has introducido es incorrecta",
+        r"comprueba tu nombre de usuario",
+        r"vuelve a intentarlo",
+        r"hubo un problema al iniciar sesi(?:ó|o)n",
+        r"there was a problem logging you into instagram",
+    )
+
+    per_pattern_timeout = max(100, int(timeout / len(error_patterns)))
+    for pattern in error_patterns:
+        try:
+            locator = page.locator(f"text=/{pattern}/i").first
+            locator.wait_for(state="visible", timeout=per_pattern_timeout)
+            logger.info("Login error detected via visible text pattern: %s", pattern)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _wait_for_login_next_step(
+    page,
+    stop_checker: Callable[[], None] | None = None,
+    timeout_seconds: float = 10,
+) -> str:
+    deadline = time.monotonic() + timeout_seconds
+
+    while time.monotonic() < deadline:
+        _check_stop(stop_checker)
+
+        if _detect_login_error(page, timeout=500):
+            return "error"
+
+        if _needs_security_code(page, stop_checker):
+            return "security_code"
+
+        if _login_success_visible(page) or (_has_instagram_session_cookie(page) and not _is_login_or_challenge_url(page)):
+            return "logged_in"
+
+        _interruptible_sleep(stop_checker, 0.25, 0.4)
+
+    logger.info("No 2FA challenge detected after %.0f seconds", timeout_seconds)
+    return "unknown"
+
+
+def _login_success_visible(page) -> bool:
+    selectors = (
+        "a[href='/']",
+        "a[href='/direct/inbox/']",
+        "a[href='/explore/']",
+        "a[href='/reels/']",
+        "svg[aria-label='Inicio']",
+        "svg[aria-label='Home']",
+        "svg[aria-label='Nueva publicación']",
+        "svg[aria-label='New post']",
+        "a[href*='/accounts/edit/']",
+    )
+
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.count() > 0 and locator.is_visible(timeout=250):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _has_instagram_session_cookie(page) -> bool:
     try:
-        page.wait_for_selector(error_selector, timeout=2500)
-        return True
+        cookies = page.context.cookies(INSTAGRAM)
+    except Exception as exc:
+        logger.debug("Could not inspect Instagram cookies: %s", exc)
+        return False
+
+    return any(
+        cookie.get("name") == "sessionid" and bool(cookie.get("value"))
+        for cookie in cookies
+    )
+
+
+def _is_login_or_challenge_url(page) -> bool:
+    try:
+        url = page.url.lower()
     except Exception:
         return False
+
+    return any(
+        marker in url
+        for marker in (
+            "/accounts/login",
+            "/accounts/emailsignup",
+            "/challenge",
+            "/two_factor",
+            "/two_step_verification",
+        )
+    )
 
 
 def _needs_security_code(page, stop_checker: Callable[[], None] | None = None) -> bool:
     _check_stop(stop_checker)
 
     try:
-        page.wait_for_load_state("domcontentloaded", timeout=8000)
+        page.wait_for_load_state("domcontentloaded", timeout=500)
     except Exception:
         pass
 
@@ -296,18 +402,33 @@ def _needs_security_code(page, stop_checker: Callable[[], None] | None = None) -
         "input[id^='_r_'][type='text'][autocomplete='off']",
         "label[for^='_r_']",
         "input[autocomplete='one-time-code']",
+        "input[inputmode='numeric']",
+        "input[type='tel']",
         "input[name='verificationCode']",
         "input[name='security_code']",
         "input[name='code'][type='text']",
+        "input[aria-label*='code' i]",
+        "input[aria-label*='codigo' i]",
     )
 
     for selector in two_fa_selectors:
         try:
-            page.locator(selector).first.wait_for(state="attached", timeout=2000)
+            locator = page.locator(selector).first
+            if locator.count() == 0:
+                continue
+            try:
+                if not locator.is_visible(timeout=250):
+                    continue
+            except Exception:
+                pass
             logger.info("2FA input detected via selector: %s", selector)
             return True
         except Exception:
             continue
+
+    if _needs_security_code_from_dom(page):
+        logger.info("2FA input detected via DOM label/input heuristic")
+        return True
 
     text_patterns = (
         "Introduce el código",
@@ -317,12 +438,16 @@ def _needs_security_code(page, stop_checker: Callable[[], None] | None = None) -
         "código de seguridad",
         "security code",
         "two-factor",
+        "two factor",
+        "Enter code",
+        "Verification code",
+        "WhatsApp",
         "autenticación en dos pasos",
     )
 
     for pattern in text_patterns:
         try:
-            page.locator(f"text={pattern}").first.wait_for(state="visible", timeout=1000)
+            page.locator(f"text={pattern}").first.wait_for(state="visible", timeout=250)
             logger.info("2FA detected via text pattern: '%s'", pattern)
             return True
         except Exception:
@@ -330,6 +455,47 @@ def _needs_security_code(page, stop_checker: Callable[[], None] | None = None) -
 
     logger.info("No 2FA challenge detected")
     return False
+
+
+def _needs_security_code_from_dom(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                    const visible = (el) => {
+                        if (!el || el.disabled || el.type === 'hidden') return false;
+                        const style = window.getComputedStyle(el);
+                        if (style.visibility === 'hidden' || style.display === 'none') return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    };
+
+                    const labelTexts = ['codigo', 'código', 'code', 'security code', 'verification code'];
+                    const labels = Array.from(document.querySelectorAll('label[for]'));
+                    for (const label of labels) {
+                        const text = (label.textContent || '').trim().toLowerCase();
+                        if (!labelTexts.some((candidate) => text.includes(candidate))) continue;
+
+                        const input = document.getElementById(label.getAttribute('for'));
+                        if (input && input.matches('input[type="text"], input:not([type])') && visible(input)) {
+                            return true;
+                        }
+                    }
+
+                    return Array.from(document.querySelectorAll('form input[type="text"][autocomplete="off"]'))
+                        .some((input) => {
+                            if (!visible(input)) return false;
+                            const id = input.id || '';
+                            const form = input.closest('form');
+                            const submit = form && form.querySelector('input[type="submit"], button[type="submit"]');
+                            return id.startsWith('_r_') && Boolean(submit);
+                        });
+                }"""
+            )
+        )
+    except Exception as exc:
+        logger.debug("2FA DOM heuristic failed: %s", exc)
+        return False
 
 
 def _submit_security_code(page, code: str, stop_checker: Callable[[], None] | None = None) -> None:
@@ -342,6 +508,7 @@ def _submit_security_code(page, code: str, stop_checker: Callable[[], None] | No
         raise RuntimeError("Security code is empty")
 
     logger.info(f"Filling security code (length: {len(code)})", extra={"user_visible": True})
+    _interruptible_sleep(stop_checker, 0.8, 1.5)
 
     filled = False
     fill_selectors = (
@@ -364,6 +531,7 @@ def _submit_security_code(page, code: str, stop_checker: Callable[[], None] | No
                 try:
                     locator.wait_for(state="attached", timeout=2000)
                     locator.focus()
+                    _interruptible_sleep(stop_checker, 0.3, 0.8)
                     locator.fill(code)
                     logger.info(f"Security code filled successfully with selector: {selector}", extra={"user_visible": True})
                     filled = True
@@ -384,24 +552,14 @@ def _submit_security_code(page, code: str, stop_checker: Callable[[], None] | No
 
     if not filled:
         logger.warning("Could not fill security code via selectors, trying DOM manipulation", extra={"user_visible": True})
-        # Last resort: try DOM events
-        page.evaluate(
-            """(code) => {
-                const inputs = Array.from(document.querySelectorAll('input[type="text"]'))
-                    .filter(el => el.offsetHeight > 0 && !el.disabled);
-                if (inputs.length > 0) {
-                    const input = inputs[0];
-                    input.focus();
-                    input.value = code;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-            }""",
-            code
-        )
-        logger.info("Security code filled via DOM manipulation", extra={"user_visible": True})
+        filled = _fill_security_code_from_dom(page, code)
+        if filled:
+            logger.info("Security code filled via DOM manipulation", extra={"user_visible": True})
+        else:
+            raise RuntimeError("Could not find visible security code input")
 
     _interruptible_sleep(stop_checker, 0.4, 0.8)
+    _interruptible_sleep(stop_checker, 1.0, 1.8)
 
     # Now find and click the submit button
     logger.info("Looking for submit button", extra={"user_visible": True})
@@ -424,6 +582,7 @@ def _submit_security_code(page, code: str, stop_checker: Callable[[], None] | No
                 button = locators.first
                 try:
                     button.wait_for(state="visible", timeout=1000)
+                    _interruptible_sleep(stop_checker, 0.5, 1.2)
                     button.click(timeout=2000)
                     logger.info(f"Submit button clicked with selector: {selector}", extra={"user_visible": True})
                     submitted = True
@@ -437,19 +596,124 @@ def _submit_security_code(page, code: str, stop_checker: Callable[[], None] | No
 
     if not submitted:
         logger.info("Could not find submit button, trying Enter key", extra={"user_visible": True})
+        _interruptible_sleep(stop_checker, 0.5, 1.2)
         page.keyboard.press("Enter")
 
-    _interruptible_sleep(stop_checker, 0.8, 1.5)
+    _interruptible_sleep(stop_checker, 1.8, 3.0)
+
+
+def _fill_security_code_from_dom(page, code: str) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """(code) => {
+                    const visible = (el) => {
+                        if (!el || el.disabled || el.type === 'hidden') return false;
+                        const style = window.getComputedStyle(el);
+                        if (style.visibility === 'hidden' || style.display === 'none') return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    };
+
+                    const labelTexts = ['codigo', 'código', 'code', 'security code', 'verification code'];
+                    const labels = Array.from(document.querySelectorAll('label[for]'));
+                    for (const label of labels) {
+                        const text = (label.textContent || '').trim().toLowerCase();
+                        if (!labelTexts.some((candidate) => text.includes(candidate))) continue;
+
+                        const input = document.getElementById(label.getAttribute('for'));
+                        if (input && input.matches('input[type="text"], input:not([type])') && visible(input)) {
+                            input.focus();
+                            input.value = code;
+                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                            return true;
+                        }
+                    }
+
+                    const inputs = Array.from(document.querySelectorAll('form input[type="text"][autocomplete="off"], input[type="text"]'))
+                        .filter(visible);
+                    const input = inputs.find((candidate) => (candidate.id || '').startsWith('_r_')) || inputs[0];
+                    if (!input) return false;
+
+                    input.focus();
+                    input.value = code;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }""",
+                code,
+            )
+        )
+    except Exception as exc:
+        logger.debug("Security code DOM fill failed: %s", exc)
+        return False
+
+
+def _verify_security_code_result(page, stop_checker: Callable[[], None] | None = None) -> str:
+    deadline = time.monotonic() + 15
+
+    while time.monotonic() < deadline:
+        _check_stop(stop_checker)
+
+        if _security_code_rejected(page):
+            return "rejected"
+
+        if _login_success_visible(page) or (_has_instagram_session_cookie(page) and not _is_login_or_challenge_url(page)):
+            return "accepted"
+
+        if _detect_login_error(page, timeout=300):
+            return "rejected"
+
+        _interruptible_sleep(stop_checker, 0.25, 0.45)
+
+    if _needs_security_code(page, stop_checker):
+        return "rejected"
+    return "unknown"
+
+
+def _security_code_rejected(page) -> bool:
+    patterns = (
+        r"incorrect code",
+        r"invalid code",
+        r"code is incorrect",
+        r"security code is incorrect",
+        r"verification code is incorrect",
+        r"c.digo incorrecto",
+        r"c.digo no es correcto",
+        r"c.digo de seguridad incorrecto",
+        r"vuelve a intentarlo",
+        r"try again",
+    )
+
+    for pattern in patterns:
+        try:
+            page.locator(f"text=/{pattern}/i").first.wait_for(state="visible", timeout=200)
+            logger.info("Security code rejected via visible text pattern: %s", pattern)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _wait_until_logged_in(page, stop_checker: Callable[[], None] | None = None) -> bool:
-    for _ in range(30):
+    for _ in range(60):
         _check_stop(stop_checker)
-        url = page.url.lower()
-        if "/accounts/login" not in url and "/challenge" not in url:
-            return True
-        if _detect_login_error(page):
+
+        if _needs_security_code(page, stop_checker):
+            logger.info("2FA challenge is still pending after code submit")
             return False
+
+        if _detect_login_error(page, timeout=500):
+            return False
+
+        if _login_success_visible(page) or (_has_instagram_session_cookie(page) and not _is_login_or_challenge_url(page)):
+            return True
+
+        if _is_login_or_challenge_url(page) and _login_form_present(page, timeout=500):
+            logger.info("Instagram returned to the login form after submit")
+            return False
+
         time.sleep(0.5)
     return False
 
@@ -664,8 +928,24 @@ def _click_with_dom_events(page, selector: str) -> bool:
         return False
 
 
-def unfollow_selected_users(page, users_to_unfollow, stop_checker=None, progress=None) -> None:
-    logger.info("Automatically unfollowing %s selected users from GUI", len(users_to_unfollow))
+def unfollow_selected_users(
+    page,
+    users_to_unfollow,
+    target_username: str,
+    stop_checker=None,
+    progress=None,
+    success_callback=None,
+) -> dict:
+    logger.info("Automatically unfollowing %s selected users from the following dialog", len(users_to_unfollow))
+    result = {"success": [], "errors": []}
+
+    if not _open_following_dialog(page, target_username, stop_checker):
+        error = "Could not open Seguidos dialog"
+        logger.error(error)
+        return {
+            "success": [],
+            "errors": [{"username": username, "error": error} for username in users_to_unfollow],
+        }
 
     for index, username in enumerate(users_to_unfollow, start=1):
         try:
@@ -673,41 +953,468 @@ def unfollow_selected_users(page, users_to_unfollow, stop_checker=None, progress
             if progress:
                 progress(index, len(users_to_unfollow), username)
 
-            page.goto(f"{INSTAGRAM}/{username}/")
-            _interruptible_sleep(stop_checker, 2, 4)
+            if not _ensure_following_dialog_open(page, target_username, stop_checker):
+                raise RuntimeError("Seguidos dialog is not open")
 
-            button_selector = (
-                "button:has-text('Siguiendo'), "
-                "button:has-text('Following'), "
-                "div[role='button']:has-text('Siguiendo'), "
-                "div[role='button']:has-text('Following')"
-            )
-            _wait_for_selector(page, button_selector, stop_checker, timeout=10000)
-            _check_stop(stop_checker)
-            page.click(button_selector)
-            _interruptible_sleep(stop_checker, 2, 3)
+            if not _search_following_dialog_user(page, username, stop_checker):
+                raise RuntimeError("Could not search user in Seguidos dialog")
 
-            confirm_selector = (
-                "button:has-text('Dejar de seguir'), "
-                "span:has-text('Dejar de seguir'), "
-                "button:has-text('Unfollow')"
-            )
-            _wait_for_selector(page, confirm_selector, stop_checker, timeout=5000)
-            _check_stop(stop_checker)
-            page.locator(confirm_selector).first.click(force=True)
-            _interruptible_sleep(stop_checker, 2, 3)
+            if not _click_following_dialog_user_button(page, username, stop_checker):
+                raise RuntimeError("Siguiendo button not found in Seguidos dialog")
+
+            if not _confirm_remove_from_following_dialog(page, stop_checker):
+                raise RuntimeError("Suprimir confirmation button not found")
 
             logger.info("Unfollowed %s", username)
+            result["success"].append(username)
+            if success_callback:
+                success_callback(username)
+
+            _clear_following_dialog_search(page, stop_checker)
 
             if len(users_to_unfollow) > 5:
                 _interruptible_sleep(stop_checker, 3, 6)
         except InstagramStopRequested:
             logger.info("Automatic unfollow process stopped by user")
-            return
+            return result
         except Exception as exc:
             logger.error("Error unfollowing %s: %s", username, exc)
+            result["errors"].append({"username": username, "error": str(exc)})
 
     logger.info("Automatic GUI unfollow process finished")
+    return result
+
+
+def _open_following_dialog(page, target_username: str, stop_checker=None) -> bool:
+    target_username = _normalize_username(target_username)
+    for attempt in range(2):
+        _check_stop(stop_checker)
+        page.goto(f"{INSTAGRAM.rstrip('/')}/{target_username}/", wait_until="domcontentloaded", timeout=30_000)
+        handle_cookie_consent(page, timeout_ms=2500)
+        _interruptible_sleep(stop_checker, 1.5, 2.8)
+
+        selectors = (
+            f"a[href='/{target_username}/following/']",
+            f"a[href='/{target_username}/following']",
+            "a[href$='/following/']",
+            "a[href$='/following']",
+            "span:has-text('seguidos')",
+            "span:has-text('following')",
+        )
+        for selector in selectors:
+            _check_stop(stop_checker)
+            try:
+                locator = page.locator(selector).first
+                locator.wait_for(state="visible", timeout=2500)
+                locator.click(timeout=3000, force=True)
+                _interruptible_sleep(stop_checker, 1.8, 3.0)
+                if _following_dialog_is_open(page):
+                    return True
+            except Exception:
+                continue
+
+        if _click_following_count_from_dom(page):
+            _interruptible_sleep(stop_checker, 1.8, 3.0)
+            if _following_dialog_is_open(page):
+                return True
+
+        logger.info("Seguidos dialog did not open (attempt %s)", attempt + 1)
+
+    return False
+
+
+def _ensure_following_dialog_open(page, target_username: str, stop_checker=None) -> bool:
+    if _following_dialog_is_open(page):
+        return True
+    return _open_following_dialog(page, target_username, stop_checker)
+
+
+def _following_dialog_is_open(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                    const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+                    return dialogs.some((dialog) => {
+                        const text = (dialog.textContent || '').toLowerCase();
+                        const input = dialog.querySelector('input[placeholder], input[aria-label]');
+                        return input && (text.includes('seguidos') || text.includes('following'));
+                    });
+                }"""
+            )
+        )
+    except Exception as exc:
+        logger.debug("Could not detect Seguidos dialog: %s", exc)
+        return False
+
+
+def _click_following_count_from_dom(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                    };
+                    const candidates = Array.from(document.querySelectorAll('a, span, div[role="button"]'));
+                    const target = candidates.find((el) => {
+                        const text = (el.textContent || '').trim().toLowerCase();
+                        return visible(el) && (text.includes('seguidos') || text.includes('following'));
+                    });
+                    if (!target) return false;
+                    const clickable = target.closest('a, button, div[role="button"]') || target;
+                    clickable.scrollIntoView({ block: 'center', inline: 'center' });
+                    clickable.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    clickable.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    clickable.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    clickable.click();
+                    return true;
+                }"""
+            )
+        )
+    except Exception as exc:
+        logger.debug("DOM following count click failed: %s", exc)
+        return False
+
+
+def _search_following_dialog_user(page, username: str, stop_checker=None) -> bool:
+    selectors = (
+        "div[role='dialog'] input[aria-label='Buscar entrada']",
+        "div[role='dialog'] input[placeholder='Busca']",
+        "div[role='dialog'] input[aria-label*='Buscar' i]",
+        "div[role='dialog'] input[placeholder*='Busca' i]",
+        "div[role='dialog'] input[aria-label*='Search' i]",
+        "div[role='dialog'] input[placeholder*='Search' i]",
+        "div[role='dialog'] input[type='text']",
+    )
+
+    for selector in selectors:
+        _check_stop(stop_checker)
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=2500)
+            locator.click(timeout=1500, force=True)
+            locator.fill("", timeout=1500)
+            _interruptible_sleep(stop_checker, 0.3, 0.7)
+            locator.fill(username, timeout=2000)
+            _interruptible_sleep(stop_checker, 1.4, 2.4)
+            return True
+        except Exception:
+            continue
+
+    return _search_following_dialog_user_from_dom(page, username)
+
+
+def _search_following_dialog_user_from_dom(page, username: str) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """(username) => {
+                    const dialog = Array.from(document.querySelectorAll('div[role="dialog"]')).at(-1);
+                    if (!dialog) return false;
+                    const input = Array.from(dialog.querySelectorAll('input')).find((candidate) => {
+                        const type = (candidate.getAttribute('type') || 'text').toLowerCase();
+                        return type === 'text' || type === 'search' || !candidate.getAttribute('type');
+                    });
+                    if (!input) return false;
+                    input.focus();
+                    input.value = '';
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.value = username;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }""",
+                username,
+            )
+        )
+    except Exception as exc:
+        logger.debug("DOM Seguidos search failed for %s: %s", username, exc)
+        return False
+
+
+def _click_following_dialog_user_button(page, username: str, stop_checker=None) -> bool:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        _check_stop(stop_checker)
+        if _click_following_dialog_user_button_from_dom(page, username):
+            _interruptible_sleep(stop_checker, 1.0, 1.8)
+            return True
+        _interruptible_sleep(stop_checker, 0.35, 0.7)
+    return False
+
+
+def _click_following_dialog_user_button_from_dom(page, username: str) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """(username) => {
+                    const normalize = (value) => (value || '').trim().toLowerCase();
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                    };
+                    const click = (el) => {
+                        el.scrollIntoView({ block: 'center', inline: 'center' });
+                        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                        el.click();
+                    };
+
+                    const dialog = Array.from(document.querySelectorAll('div[role="dialog"]')).at(-1);
+                    if (!dialog) return false;
+                    const wanted = `/${normalize(username)}/`;
+                    const anchors = Array.from(dialog.querySelectorAll('a[href]'));
+                    const anchor = anchors.find((candidate) => {
+                        try {
+                            const url = new URL(candidate.getAttribute('href'), window.location.origin);
+                            return normalize(url.pathname) === wanted;
+                        } catch {
+                            return false;
+                        }
+                    });
+                    if (!anchor) return false;
+
+                    const anchorRect = anchor.getBoundingClientRect();
+                    const anchorCenterY = anchorRect.top + (anchorRect.height / 2);
+                    const labels = ['siguiendo', 'following'];
+                    let node = anchor;
+                    while (node && node !== dialog) {
+                        const buttons = Array.from(node.querySelectorAll('button, div[role="button"]'))
+                            .filter(visible)
+                            .filter((candidate) => {
+                                const text = normalize(candidate.textContent || candidate.getAttribute('aria-label'));
+                                return labels.some((label) => text.includes(label));
+                            })
+                            .filter((candidate) => {
+                                const rect = candidate.getBoundingClientRect();
+                                const centerY = rect.top + (rect.height / 2);
+                                return Math.abs(centerY - anchorCenterY) < 80;
+                            })
+                            .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
+                        if (buttons.length) {
+                            click(buttons[0]);
+                            return true;
+                        }
+                        node = node.parentElement;
+                    }
+                    return false;
+                }""",
+                username,
+            )
+        )
+    except Exception as exc:
+        logger.debug("DOM click of Seguidos row button failed for %s: %s", username, exc)
+        return False
+
+
+def _confirm_remove_from_following_dialog(page, stop_checker=None) -> bool:
+    selectors = (
+        "button:has-text('Suprimir')",
+        "div[role='button']:has-text('Suprimir')",
+        "span:has-text('Suprimir')",
+        "button:has-text('Remove')",
+        "div[role='button']:has-text('Remove')",
+        "span:has-text('Remove')",
+        "button:has-text('Dejar de seguir')",
+        "div[role='button']:has-text('Dejar de seguir')",
+        "button:has-text('Unfollow')",
+        "div[role='button']:has-text('Unfollow')",
+    )
+
+    for selector in selectors:
+        _check_stop(stop_checker)
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=2500)
+            locator.click(timeout=3000, force=True)
+            _interruptible_sleep(stop_checker, 1.8, 3.0)
+            return True
+        except Exception:
+            continue
+
+    return _confirm_remove_from_following_dialog_from_dom(page)
+
+
+def _confirm_remove_from_following_dialog_from_dom(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                    const labels = ['suprimir', 'remove', 'dejar de seguir', 'unfollow'];
+                    const candidates = Array.from(document.querySelectorAll('button, div[role="button"], span'));
+                    const target = candidates.find((el) => {
+                        const text = (el.textContent || '').trim().toLowerCase();
+                        return labels.some((label) => text === label || text.includes(label));
+                    });
+                    if (!target) return false;
+                    const clickable = target.closest('button, div[role="button"]') || target;
+                    clickable.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    clickable.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    clickable.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    clickable.click();
+                    return true;
+                }"""
+            )
+        )
+    except Exception as exc:
+        logger.debug("DOM Suprimir confirmation fallback failed: %s", exc)
+        return False
+
+
+def _clear_following_dialog_search(page, stop_checker=None) -> bool:
+    _check_stop(stop_checker)
+    try:
+        cleared = bool(
+            page.evaluate(
+                """() => {
+                    const dialog = Array.from(document.querySelectorAll('div[role="dialog"]')).at(-1);
+                    if (!dialog) return false;
+                    const input = Array.from(dialog.querySelectorAll('input')).find((candidate) => {
+                        const type = (candidate.getAttribute('type') || 'text').toLowerCase();
+                        return type === 'text' || type === 'search' || !candidate.getAttribute('type');
+                    });
+                    if (!input) return false;
+                    input.focus();
+                    input.value = '';
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }"""
+            )
+        )
+        _interruptible_sleep(stop_checker, 0.5, 1.0)
+        return cleared
+    except Exception as exc:
+        logger.debug("Could not clear Seguidos search: %s", exc)
+        return False
+
+
+def _open_profile_and_click_following(page, username: str, stop_checker=None) -> bool:
+    for attempt in range(2):
+        _check_stop(stop_checker)
+        page.goto(f"{INSTAGRAM}/{username}/", wait_until="domcontentloaded", timeout=30_000)
+        _interruptible_sleep(stop_checker, 2, 4)
+
+        if _click_following_button(page, stop_checker):
+            return True
+
+        logger.info("Following button not found for %s. Reloading profile (attempt %s)", username, attempt + 1)
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=30_000)
+        except Exception:
+            pass
+        _interruptible_sleep(stop_checker, 2, 3)
+
+    return False
+
+
+def _click_following_button(page, stop_checker=None) -> bool:
+    selectors = (
+        "button:has-text('Siguiendo')",
+        "button:has-text('Following')",
+        "div[role='button']:has-text('Siguiendo')",
+        "div[role='button']:has-text('Following')",
+        "button[aria-label*='Siguiendo' i]",
+        "button[aria-label*='Following' i]",
+        "div[aria-label*='Siguiendo' i][role='button']",
+        "div[aria-label*='Following' i][role='button']",
+    )
+
+    for selector in selectors:
+        _check_stop(stop_checker)
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=2000)
+            locator.click(timeout=3000, force=True)
+            _interruptible_sleep(stop_checker, 2, 3)
+            return True
+        except Exception:
+            continue
+
+    return _click_following_button_from_dom(page)
+
+
+def _click_following_button_from_dom(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                    const labels = ['siguiendo', 'following'];
+                    const candidates = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                    const button = candidates.find((el) => {
+                        const text = (el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                        return labels.some((label) => text.includes(label));
+                    });
+                    if (!button) return false;
+                    button.scrollIntoView({ block: 'center', inline: 'center' });
+                    button.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    button.click();
+                    return true;
+                }"""
+            )
+        )
+    except Exception as exc:
+        logger.debug("DOM following click fallback failed: %s", exc)
+        return False
+
+
+def _confirm_unfollow(page, stop_checker=None) -> bool:
+    selectors = (
+        "button:has-text('Dejar de seguir')",
+        "div[role='button']:has-text('Dejar de seguir')",
+        "span:has-text('Dejar de seguir')",
+        "button:has-text('Unfollow')",
+        "div[role='button']:has-text('Unfollow')",
+        "span:has-text('Unfollow')",
+    )
+
+    for selector in selectors:
+        _check_stop(stop_checker)
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=2500)
+            locator.click(timeout=3000, force=True)
+            _interruptible_sleep(stop_checker, 2, 3)
+            return True
+        except Exception:
+            continue
+
+    return _confirm_unfollow_from_dom(page)
+
+
+def _confirm_unfollow_from_dom(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                    const labels = ['dejar de seguir', 'unfollow'];
+                    const candidates = Array.from(document.querySelectorAll('button, div[role="button"], span'));
+                    const target = candidates.find((el) => {
+                        const text = (el.textContent || '').trim().toLowerCase();
+                        return labels.some((label) => text === label || text.includes(label));
+                    });
+                    if (!target) return false;
+                    const clickable = target.closest('button, div[role="button"]') || target;
+                    clickable.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    clickable.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    clickable.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    clickable.click();
+                    return true;
+                }"""
+            )
+        )
+    except Exception as exc:
+        logger.debug("DOM unfollow confirmation fallback failed: %s", exc)
+        return False
 
 
 def _wait_for_selector(page, selector: str, stop_checker=None, timeout: int = 10000) -> None:
@@ -858,9 +1565,10 @@ def _collect_via_api(page, user_id: str, kind: str, batch_size: int = 200) -> se
     return users
 
 
-def _fallback_scroll(page, kind: str) -> set[str]:
+def _fallback_scroll(page, kind: str, target_username: str) -> set[str]:
     logger.warning("[Fallback] switching to DOM scroll for '%s'", kind)
-    selector = f"a[href='/{USERNAME}/{kind}/']"
+    target_username = _normalize_username(target_username)
+    selector = f"a[href='/{target_username}/{kind}/']"
 
     try:
         page.wait_for_selector(selector, timeout=15_000)
@@ -873,11 +1581,12 @@ def _fallback_scroll(page, kind: str) -> set[str]:
         logger.error("[Fallback] could not open %s dialog: %s", kind, exc)
         return set()
 
-    return _scroll_and_collect(page)
+    return _scroll_and_collect(page, target_username)
 
 
-def _scroll_and_collect(page) -> set[str]:
+def _scroll_and_collect(page, target_username: str) -> set[str]:
     users = set()
+    target_username = _normalize_username(target_username)
 
     scroll_container_selector = (
         "div._aano, "
@@ -938,7 +1647,7 @@ def _scroll_and_collect(page) -> set[str]:
                 parts = href.strip("/").split("/")
                 if len(parts) == 1:
                     username = parts[0]
-                    if username and username != USERNAME:
+                    if username and username != target_username:
                         users.add(username)
             except Exception:
                 continue
@@ -979,27 +1688,28 @@ def _scroll_and_collect(page) -> set[str]:
     return users
 
 
-def get_users(page, kind: str) -> set[str]:
+def get_users(page, kind: str, target_username: str) -> set[str]:
     if kind not in ("followers", "following"):
         raise ValueError(f"kind must be 'followers' or 'following', got: {kind!r}")
 
-    _validate_config()
+    _validate_config(target_username)
+    target_username = _normalize_username(target_username)
 
-    page.goto(f"{INSTAGRAM.rstrip('/')}/{USERNAME.strip()}/")
+    page.goto(f"{INSTAGRAM.rstrip('/')}/{target_username}/")
     handle_cookie_consent(page)
     human_sleep(1, 2)
 
-    user_id = _get_user_id(page, USERNAME)
+    user_id = _get_user_id(page, target_username)
     if not user_id:
         logger.error("Could not resolve user_id via API; falling back to scroll")
-        return _fallback_scroll(page, kind)
+        return _fallback_scroll(page, kind, target_username)
 
-    logger.info("Fetching '%s' for @%s (id=%s) via API", kind, USERNAME, user_id)
+    logger.info("Fetching '%s' for @%s (id=%s) via API", kind, target_username, user_id)
     users = _collect_via_api(page, user_id, kind)
 
     if not users:
         logger.warning("API returned 0 users; falling back to scroll")
-        return _fallback_scroll(page, kind)
+        return _fallback_scroll(page, kind, target_username)
 
     logger.info("%s '%s' collected via API", len(users), kind)
     return users

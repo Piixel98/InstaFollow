@@ -38,16 +38,15 @@ InstaFollow is a modular Instagram automation tool built with Python and Playwri
 
 ## Configuration
 
-Before running the script, update `config.py` with your information:
+Before running the script, update `config.py` with your environment values:
 
 ```python
-USERNAME = "your_instagram_username"
 INSTAGRAM = "https://www.instagram.com"
 COOKIES_FILE = "cookies.json"
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
-- `USERNAME`: Your Instagram handle.
+- The desktop app asks for the Instagram handle to review in the `@instagram` field and stores it in local settings.
 - `CHROME_PATH`: The absolute path to your Chrome executable.
 
 ## How to Run
@@ -78,7 +77,7 @@ CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
 ## Build a Windows `.exe`
 
-The application can be packaged with PyInstaller. The generated executable will use the values embedded in `config.py`, so update `USERNAME`, `INSTAGRAM`, `COOKIES_FILE`, and `CHROME_PATH` before building. If you change `config.py` later, rebuild the executable.
+The application can be packaged with PyInstaller. The generated executable will use the values embedded in `config.py`, so update `INSTAGRAM`, `COOKIES_FILE`, and `CHROME_PATH` before building. If you change `config.py` later, rebuild the executable.
 
 1. **Install PyInstaller in the Poetry environment**:
    ```powershell
