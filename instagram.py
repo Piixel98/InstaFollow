@@ -498,6 +498,106 @@ def _needs_security_code_from_dom(page) -> bool:
         return False
 
 
+def resend_security_code(page, stop_checker: Callable[[], None] | None = None) -> bool:
+    _check_stop(stop_checker)
+
+    labels_pattern = re.compile(
+        r"(recibir\s+un\s+c[oó]digo\s+nuevo|get\s+a\s+new\s+code|send\s+a\s+new\s+code|resend\s+code)",
+        re.IGNORECASE,
+    )
+
+    try:
+        role_button = page.get_by_role("button", name=labels_pattern).first
+        role_button.wait_for(state="visible", timeout=2500)
+        role_button.scroll_into_view_if_needed(timeout=1500)
+        role_button.click(timeout=3000, force=True)
+        logger.info("Requested a new Instagram security code via role button.", extra={"user_visible": True})
+        _interruptible_sleep(stop_checker, 0.8, 1.4)
+        return True
+    except Exception as exc:
+        logger.debug("Could not click resend code via role button: %s", exc)
+
+    selectors = (
+        "div[role='button']:has-text('Recibir un código nuevo')",
+        "div[role='button']:has-text('Recibir un codigo nuevo')",
+        "text=/Recibir un c[oó]digo nuevo/i",
+        "div[role='button']:has-text('Get a new code')",
+        "div[role='button']:has-text('Send a new code')",
+        "div[role='button']:has-text('Resend code')",
+    )
+
+    for selector in selectors:
+        _check_stop(stop_checker)
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=1500)
+            locator.scroll_into_view_if_needed(timeout=1500)
+            locator.click(timeout=2500, force=True)
+            logger.info("Requested a new Instagram security code.", extra={"user_visible": True})
+            _interruptible_sleep(stop_checker, 0.8, 1.4)
+            return True
+        except Exception:
+            continue
+
+    try:
+        clicked = bool(
+            page.evaluate(
+                """() => {
+                    const labels = [
+                        'recibir un código nuevo',
+                        'recibir un codigo nuevo',
+                        'get a new code',
+                        'send a new code',
+                        'resend code'
+                    ];
+                    const normalize = (value) => (value || '')
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim()
+                        .toLowerCase();
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                    };
+                    const click = (el) => {
+                        el.scrollIntoView({ block: 'center', inline: 'center' });
+                        const rect = el.getBoundingClientRect();
+                        const x = rect.left + (rect.width / 2);
+                        const y = rect.top + (rect.height / 2);
+                        for (const type of ['pointerover', 'pointerenter', 'mouseover', 'mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+                            const EventClass = type.startsWith('pointer') ? PointerEvent : MouseEvent;
+                            el.dispatchEvent(new EventClass(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+                        }
+                        el.click();
+                    };
+                    const wanted = labels.map(normalize);
+                    const candidates = Array.from(document.querySelectorAll('div[role="button"], button, span, div'));
+                    const target = candidates.find((el) => {
+                        const text = normalize(el.textContent);
+                        return visible(el) && wanted.some((label) => text.includes(label));
+                    });
+                    if (!target) return false;
+                    const clickable = target.matches('div[role="button"], button')
+                        ? target
+                        : target.closest('div[role="button"], button');
+                    if (!clickable || !visible(clickable)) return false;
+                    click(clickable);
+                    return true;
+                }"""
+            )
+        )
+        if clicked:
+            logger.info("Requested a new Instagram security code via DOM fallback.", extra={"user_visible": True})
+            _interruptible_sleep(stop_checker, 0.8, 1.4)
+        return clicked
+    except Exception as exc:
+        logger.debug("Could not request a new security code: %s", exc)
+        return False
+
+
 def _submit_security_code(page, code: str, stop_checker: Callable[[], None] | None = None) -> None:
     """
     Fills and submits the security code to Instagram's 2FA form.

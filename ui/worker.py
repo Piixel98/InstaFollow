@@ -6,7 +6,14 @@ from PySide6.QtCore import QThread, Signal
 
 from browser import get_browser_context
 from cookies import load_cookies, save_cookies
-from instagram import get_users, is_logged_in, login_with_credentials, restore_instagram_session, unfollow_selected_users
+from instagram import (
+    get_users,
+    is_logged_in,
+    login_with_credentials,
+    resend_security_code,
+    restore_instagram_session,
+    unfollow_selected_users,
+)
 
 logger = logging.getLogger("InstaFollow")
 
@@ -37,6 +44,7 @@ class AutomationWorker(QThread):
         self._credentials_event = threading.Event()
         self._credentials = credentials
         self._security_code_event = threading.Event()
+        self._resend_security_code_event = threading.Event()
         self._security_code = None
         self.pw = None
         self.browser = None
@@ -75,6 +83,7 @@ class AutomationWorker(QThread):
         self._answer_event.set()
         self._credentials_event.set()
         self._security_code_event.set()
+        self._resend_security_code_event.set()
         self._close_browser()
 
     def answer(self, value):
@@ -88,6 +97,9 @@ class AutomationWorker(QThread):
     def set_security_code(self, code):
         self._security_code = code
         self._security_code_event.set()
+
+    def request_security_code_resend(self):
+        self._resend_security_code_event.set()
 
     def _run_flow(self):
         self.status_changed.emit("Running")
@@ -236,12 +248,33 @@ class AutomationWorker(QThread):
     def _wait_for_security_code(self):
         self._security_code = None
         self._security_code_event.clear()
+        self._resend_security_code_event.clear()
         self.security_code_required.emit()
         while not self._security_code_event.wait(0.1):
             self._check_stop()
+            if self._resend_security_code_event.is_set():
+                self._resend_security_code_event.clear()
+                self._resend_security_code()
         if not self._security_code:
             raise StopRequested()
         return self._security_code
+
+    def _resend_security_code(self):
+        if self.page is None:
+            self.output.emit("warning", "Browser is not ready to request a new security code.")
+            return
+
+        self.output.emit("info", "Requesting a new security code in Instagram.")
+        try:
+            if resend_security_code(self.page, self._check_stop):
+                self.output.emit("success", "New security code requested.")
+            else:
+                self.output.emit("warning", "Could not find the button to request a new security code.")
+        except StopRequested:
+            raise
+        except Exception as exc:
+            logger.debug("Could not request a new security code", exc_info=True, extra={"user_visible": False})
+            self.output.emit("warning", f"Could not request a new security code: {exc}")
 
     def _ask_unfollow_selection(self, users):
         self._answer = []
