@@ -3,10 +3,11 @@ import logging
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QUrl
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -47,6 +48,7 @@ class MainWindow(QMainWindow):
         self.current_status = "idle"
         self.saved_credentials = None
         self.awaiting_security_code = False
+        self.security_code_dialog = None
         self.cookies_available = has_valid_cookies()
         self.credentials_locked = False
         self.selected_process_mode = "no_followers"
@@ -65,12 +67,13 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._refresh_count_labels()
         self.apply_language()
+        self._apply_responsive_layout()
         self._restore_window()
 
     def _build_ui(self):
         self.setWindowTitle("InstaFollow")
         self.setWindowIcon(QIcon(resource_path("assets/instafollow.ico")))
-        self.setMinimumSize(1100, 760)
+        self.setMinimumSize(540, 640)
         self.setStyleSheet(APP_STYLE)
 
         root = QWidget()
@@ -97,24 +100,38 @@ class MainWindow(QMainWindow):
         header.addLayout(title_group)
         header.addStretch()
 
+        self.process_switch = QFrame()
+        self.process_switch.setObjectName("processSwitch")
+        process_layout = QHBoxLayout(self.process_switch)
+        process_layout.setContentsMargins(3, 3, 3, 3)
+        process_layout.setSpacing(3)
+
         self.no_followers_button = QPushButton("")
-        self.no_followers_button.setObjectName("startButton")
+        self.no_followers_button.setObjectName("processButton")
+        self.no_followers_button.setCheckable(True)
+        self.no_followers_button.setMinimumWidth(132)
         self.no_followers_button.clicked.connect(lambda: self.select_process_mode("no_followers"))
-        header.addWidget(self.no_followers_button)
+        process_layout.addWidget(self.no_followers_button)
 
         self.unfollow_process_button = QPushButton("")
-        self.unfollow_process_button.setObjectName("secondaryButton")
+        self.unfollow_process_button.setObjectName("processButton")
+        self.unfollow_process_button.setCheckable(True)
+        self.unfollow_process_button.setMinimumWidth(132)
         self.unfollow_process_button.clicked.connect(lambda: self.select_process_mode("unfollow"))
-        header.addWidget(self.unfollow_process_button)
+        process_layout.addWidget(self.unfollow_process_button)
+        header.addWidget(self.process_switch)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("statusPill")
         header.addWidget(self.status_label)
 
-        menu_button = QPushButton("...")
-        menu_button.setObjectName("menuButton")
-        menu_button.clicked.connect(self._open_menu)
-        header.addWidget(menu_button)
+        self.menu_button = QPushButton("")
+        self.menu_button.setObjectName("menuButton")
+        self.menu_button.setIcon(self._menu_icon())
+        self.menu_button.setIconSize(QSize(18, 18))
+        self.menu_button.setToolTip(self.t("more_options"))
+        self.menu_button.clicked.connect(self._open_menu)
+        header.addWidget(self.menu_button)
         shell_layout.addLayout(header)
 
         self.browser_panel = self._build_browser_panel()
@@ -167,12 +184,19 @@ class MainWindow(QMainWindow):
         header.addStretch()
         self.browser_toggle_button = QPushButton("")
         self.browser_toggle_button.setObjectName("toggleButton")
+        self.browser_toggle_button.setCheckable(True)
         self.browser_toggle_button.clicked.connect(self.toggle_browser_visibility)
         header.addWidget(self.browser_toggle_button)
         layout.addLayout(header)
 
         self.session_form = self._build_session_form()
-        layout.addWidget(self.session_form, stretch=1)
+        self.session_scroll = QScrollArea()
+        self.session_scroll.setObjectName("sessionScroll")
+        self.session_scroll.setWidgetResizable(True)
+        self.session_scroll.setFrameShape(QFrame.NoFrame)
+        self.session_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.session_scroll.setWidget(self.session_form)
+        layout.addWidget(self.session_scroll, stretch=1)
 
         self.browser_container = BrowserContainer()
         self.browser_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -196,6 +220,7 @@ class MainWindow(QMainWindow):
         self.session_heading.setVisible(False)
         self.session_badge = QLabel("")
         self.session_badge.setObjectName("sessionBadge")
+        self.session_badge.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         header.addWidget(self.session_heading)
         header.addStretch()
         header.addWidget(self.session_badge)
@@ -203,34 +228,44 @@ class MainWindow(QMainWindow):
 
         self.credential_card = QFrame()
         self.credential_card.setObjectName("credentialCard")
-        card_layout = QGridLayout(self.credential_card)
-        card_layout.setContentsMargins(16, 14, 16, 16)
-        card_layout.setHorizontalSpacing(12)
-        card_layout.setVerticalSpacing(9)
+        self.credentials_layout = QGridLayout(self.credential_card)
+        self.credentials_layout.setContentsMargins(16, 14, 16, 16)
+        self.credentials_layout.setHorizontalSpacing(12)
+        self.credentials_layout.setVerticalSpacing(9)
 
         self.username_label = QLabel("")
         self.password_label = QLabel("")
         self.target_username_label = QLabel("")
         for label in (self.target_username_label, self.username_label, self.password_label):
             label.setObjectName("statLabel")
+            label.setWordWrap(False)
+            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.target_username_input = QLineEdit()
         self.target_username_input.setText(self.target_username)
+        self.target_username_input.setMinimumWidth(0)
+        self.target_username_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.target_username_input.editingFinished.connect(self.save_target_username)
         self.target_username_input.textChanged.connect(lambda: self._refresh_start_button_state())
 
         self.username_input = QLineEdit()
+        self.username_input.setMinimumWidth(0)
+        self.username_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.password_input = QLineEdit()
+        self.password_input.setMinimumWidth(0)
+        self.password_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_visibility_button = QPushButton("")
         self.password_visibility_button.setObjectName("iconButton")
         self.password_visibility_button.setCheckable(True)
         self.password_visibility_button.setIcon(self._eye_icon(False))
         self.password_visibility_button.setIconSize(QSize(18, 18))
+        self.password_visibility_button.setFixedWidth(42)
         self.password_visibility_button.clicked.connect(self.toggle_password_visibility)
 
         self.session_status = QLabel("")
-        self.session_status.setStyleSheet("color: #AFAFAF;")
+        self.session_status.setObjectName("sessionStatus")
+        self.session_status.setWordWrap(True)
 
         self.save_credentials_button = QPushButton("")
         self.save_credentials_button.setObjectName("startButton")
@@ -244,28 +279,26 @@ class MainWindow(QMainWindow):
         self.change_account_button.setObjectName("secondaryButton")
         self.change_account_button.clicked.connect(self.change_account)
 
-        card_layout.addWidget(self.target_username_label, 0, 0, 1, 2)
-        card_layout.addWidget(self.target_username_input, 1, 0, 1, 2)
-        card_layout.addWidget(self.username_label, 2, 0)
-        card_layout.addWidget(self.username_input, 3, 0)
-        card_layout.addWidget(self.password_label, 2, 1)
-        password_layout = QHBoxLayout()
-        password_layout.setContentsMargins(0, 0, 0, 0)
-        password_layout.setSpacing(6)
-        password_layout.addWidget(self.password_input)
-        password_layout.addWidget(self.password_visibility_button)
-        card_layout.addLayout(password_layout, 3, 1)
-        card_layout.setColumnStretch(0, 1)
-        card_layout.setColumnStretch(1, 1)
+        self.password_layout = QHBoxLayout()
+        self.password_layout.setContentsMargins(0, 0, 0, 0)
+        self.password_layout.setSpacing(6)
+        self.password_layout.addWidget(self.password_input)
+        self.password_layout.addWidget(self.password_visibility_button)
+        self.credentials_layout.setColumnStretch(0, 1)
+        self.credentials_layout.setColumnStretch(1, 1)
+        self._credentials_layout_mode = None
+        self._apply_responsive_layout()
         layout.addWidget(self.credential_card)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
-        actions.addWidget(self.save_credentials_button)
-        actions.addWidget(self.edit_credentials_button)
-        actions.addWidget(self.change_account_button)
-        actions.addStretch()
-        layout.addLayout(actions)
+        for button in (self.save_credentials_button, self.edit_credentials_button, self.change_account_button):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.session_actions_layout = QGridLayout()
+        self.session_actions_layout.setHorizontalSpacing(8)
+        self.session_actions_layout.setVerticalSpacing(8)
+        layout.addLayout(self.session_actions_layout)
+        self._apply_session_actions_layout(self._credentials_layout_mode)
         layout.addWidget(self.session_status)
         self.apply_cookie_lock()
         return form
@@ -334,6 +367,86 @@ class MainWindow(QMainWindow):
         self.output.setReadOnly(True)
         layout.addWidget(self.output)
         return panel
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
+    def _apply_responsive_layout(self):
+        if not hasattr(self, "credentials_layout"):
+            return
+
+        host_width = self.session_scroll.viewport().width() if hasattr(self, "session_scroll") else self.credential_card.width()
+        mode = "wide"
+        if host_width < 620:
+            mode = "narrow"
+        elif host_width < 860:
+            mode = "compact"
+        if getattr(self, "_credentials_layout_mode", None) == mode:
+            return
+
+        self._credentials_layout_mode = mode
+        for widget in (
+            self.target_username_label,
+            self.target_username_input,
+            self.username_label,
+            self.username_input,
+            self.password_label,
+        ):
+            self.credentials_layout.removeWidget(widget)
+        self.credentials_layout.removeItem(self.password_layout)
+
+        if mode in ("compact", "narrow"):
+            self.credentials_layout.addWidget(self.target_username_label, 0, 0, 1, 1)
+            self.credentials_layout.addWidget(self.target_username_input, 1, 0, 1, 1)
+            self.credentials_layout.addWidget(self.username_label, 2, 0, 1, 1)
+            self.credentials_layout.addWidget(self.username_input, 3, 0, 1, 1)
+            self.credentials_layout.addWidget(self.password_label, 4, 0, 1, 1)
+            self.credentials_layout.addLayout(self.password_layout, 5, 0, 1, 1)
+            self.credentials_layout.setColumnStretch(0, 1)
+            self.credentials_layout.setColumnStretch(1, 0)
+            self._apply_session_actions_layout(mode)
+            return
+
+        self.credentials_layout.addWidget(self.target_username_label, 0, 0, 1, 2)
+        self.credentials_layout.addWidget(self.target_username_input, 1, 0, 1, 2)
+        self.credentials_layout.addWidget(self.username_label, 2, 0, 1, 1)
+        self.credentials_layout.addWidget(self.username_input, 3, 0, 1, 1)
+        self.credentials_layout.addWidget(self.password_label, 2, 1, 1, 1)
+        self.credentials_layout.addLayout(self.password_layout, 3, 1, 1, 1)
+        self.credentials_layout.setColumnStretch(0, 1)
+        self.credentials_layout.setColumnStretch(1, 1)
+        self._apply_session_actions_layout(mode)
+
+    def _apply_session_actions_layout(self, mode):
+        if not hasattr(self, "session_actions_layout"):
+            return
+
+        for widget in (self.save_credentials_button, self.edit_credentials_button, self.change_account_button):
+            self.session_actions_layout.removeWidget(widget)
+
+        if mode == "narrow":
+            self.session_actions_layout.addWidget(self.save_credentials_button, 0, 0)
+            self.session_actions_layout.addWidget(self.edit_credentials_button, 1, 0)
+            self.session_actions_layout.addWidget(self.change_account_button, 2, 0)
+            self.session_actions_layout.setColumnStretch(0, 1)
+            self.session_actions_layout.setColumnStretch(1, 0)
+            return
+
+        if mode == "compact":
+            self.session_actions_layout.addWidget(self.save_credentials_button, 0, 0, 1, 2)
+            self.session_actions_layout.addWidget(self.edit_credentials_button, 1, 0)
+            self.session_actions_layout.addWidget(self.change_account_button, 1, 1)
+            self.session_actions_layout.setColumnStretch(0, 1)
+            self.session_actions_layout.setColumnStretch(1, 1)
+            return
+
+        self.session_actions_layout.addWidget(self.save_credentials_button, 0, 0)
+        self.session_actions_layout.addWidget(self.edit_credentials_button, 0, 1)
+        self.session_actions_layout.addWidget(self.change_account_button, 0, 2)
+        self.session_actions_layout.setColumnStretch(0, 0)
+        self.session_actions_layout.setColumnStretch(1, 0)
+        self.session_actions_layout.setColumnStretch(2, 0)
 
     def _install_log_handler(self):
         logger = logging.getLogger("InstaFollow")
@@ -422,6 +535,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self._set_progress_running(False)
         self.awaiting_security_code = False
+        self._close_security_code_dialog()
         self._sync_cookie_credentials_state()
         self.apply_cookie_lock()
         self._refresh_start_button_state()
@@ -431,6 +545,7 @@ class MainWindow(QMainWindow):
         self.set_status("error")
         self.progress.setValue(0)
         self._set_progress_running(False)
+        self._close_security_code_dialog()
         self.show_toast(self.t("automation_failed"))
 
     def handle_worker_stopped_by_user(self):
@@ -438,6 +553,7 @@ class MainWindow(QMainWindow):
         self.set_status("stopped")
         self.progress.setValue(0)
         self._set_progress_running(False)
+        self._close_security_code_dialog()
         self.append_log("warning", self.t("stopped_by_user"))
         self.show_toast(self.t("stopped_by_user"))
 
@@ -477,23 +593,61 @@ class MainWindow(QMainWindow):
         self.append_log("warning", "2FA Security code required. Please check Instagram and enter the code.")
         self.show_toast(self.t("security_code_required"))
 
+        if self.security_code_dialog and self.security_code_dialog.isVisible():
+            self.security_code_dialog.raise_()
+            self.security_code_dialog.activateWindow()
+            return
+
+        self.awaiting_security_code = True
         dialog = SecurityCodeDialog(self.t, self)
-        dialog.setWindowModality(Qt.ApplicationModal)
-        dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.resend_requested.connect(self._request_security_code_resend)
+        dialog.accepted.connect(lambda: self._submit_security_code_dialog(dialog))
+        dialog.rejected.connect(lambda: self._cancel_security_code_dialog(dialog))
+        dialog.finished.connect(lambda: self._forget_security_code_dialog(dialog))
+        self.security_code_dialog = dialog
+        dialog.show()
         QTimer.singleShot(0, dialog.raise_)
         QTimer.singleShot(0, dialog.activateWindow)
 
-        if dialog.exec() == QDialog.Accepted:
-            code = dialog.get_security_code()
-            if code and self.worker:
-                self.append_log("info", "Security code submitted, verifying...")
-                self.worker.set_security_code(code)
-            else:
-                self.append_log("warning", "No security code entered")
-        else:
-            self.append_log("error", "2FA cancelled by user")
-            if self.worker:
-                self.worker.stop()
+    def _submit_security_code_dialog(self, dialog):
+        if dialog is not self.security_code_dialog:
+            return
+
+        code = dialog.get_security_code()
+        self.awaiting_security_code = False
+        if code and self.worker:
+            self.append_log("info", "Security code submitted, verifying...")
+            self.worker.set_security_code(code)
+            return
+
+        self.append_log("warning", "No security code entered")
+
+    def _request_security_code_resend(self):
+        self.append_log("info", "Requesting a new security code.")
+        if self.worker:
+            self.worker.request_security_code_resend()
+
+    def _cancel_security_code_dialog(self, dialog):
+        if dialog is not self.security_code_dialog or not self.awaiting_security_code:
+            return
+
+        self.awaiting_security_code = False
+        self.append_log("error", "2FA cancelled by user")
+        if self.worker:
+            self.worker.stop()
+
+    def _forget_security_code_dialog(self, dialog):
+        if dialog is self.security_code_dialog:
+            self.security_code_dialog = None
+
+    def _close_security_code_dialog(self):
+        dialog = self.security_code_dialog
+        if not dialog:
+            return
+        self.awaiting_security_code = False
+        self.security_code_dialog = None
+        dialog.close()
 
     def handle_login_failed(self):
         credentials = self.saved_credentials or {}
@@ -598,15 +752,17 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def open_config_dialog(self):
-        dialog = ConfigDialog(self.t, self.export_file_path, self.logs_dir, self)
+        dialog = ConfigDialog(self.t, self.export_file_path, self.logs_dir, self.language, self)
         if dialog.exec() != QDialog.Accepted:
             return
 
-        export_file_path, logs_dir = dialog.values()
+        export_file_path, logs_dir, language = dialog.values()
         self.export_file_path = export_file_path
         self.logs_dir = logs_dir
         self.settings.setValue("export_file_path", self.export_file_path)
         self.settings.setValue("logs_dir", self.logs_dir)
+        if language != self.language:
+            self.set_language(language)
         setup_logging(self.logs_dir)
         self.non_followers_count = self._read_non_followers_count()
         self._refresh_count_labels()
@@ -618,14 +774,14 @@ class MainWindow(QMainWindow):
         if visible:
             self._show_browser_panel()
         else:
-            self.session_form.setVisible(True)
+            self.session_scroll.setVisible(True)
             self.browser_container.setVisible(False)
         self._refresh_browser_panel_state()
         if visible:
             self._schedule_browser_resizes()
 
     def _show_browser_panel(self):
-        self.session_form.setVisible(False)
+        self.session_scroll.setVisible(False)
         self.browser_container.setVisible(True)
         self.browser_panel.layout().invalidate()
         self.browser_panel.updateGeometry()
@@ -727,28 +883,29 @@ class MainWindow(QMainWindow):
 
     def _open_menu(self):
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+
         config_action = QAction(self.t("config"), self)
+        config_action.setIcon(self._settings_icon())
+        config_action.setToolTip(self.t("config_tooltip"))
         config_action.triggered.connect(self.open_config_dialog)
         menu.addAction(config_action)
 
         open_logs = QAction(self.t("open_logs"), self)
+        open_logs.setIcon(self._logs_icon())
+        open_logs.setToolTip(self.t("open_logs_tooltip"))
         open_logs.triggered.connect(self.open_logs_dialog)
         menu.addAction(open_logs)
 
+        menu.addSeparator()
+
         clear_output = QAction(self.t("clear_output"), self)
+        clear_output.setIcon(self._clear_icon())
+        clear_output.setToolTip(self.t("clear_output_tooltip"))
         clear_output.triggered.connect(self.clear_output)
         menu.addAction(clear_output)
 
-        language_menu = menu.addMenu(self.t("language"))
-        spanish = QAction(self.t("spanish"), self)
-        spanish.triggered.connect(lambda: self.set_language("es"))
-        language_menu.addAction(spanish)
-
-        english = QAction(self.t("english"), self)
-        english.triggered.connect(lambda: self.set_language("en"))
-        language_menu.addAction(english)
-
-        menu.exec(self.mapToGlobal(self.rect().topRight()))
+        menu.exec(self.menu_button.mapToGlobal(self.menu_button.rect().bottomLeft()))
 
     def t(self, key, default=None):
         return TRANSLATIONS.get(self.language, TRANSLATIONS["en"]).get(key, default or key)
@@ -805,8 +962,11 @@ class MainWindow(QMainWindow):
         self.output_title.setText(self.t("user_output"))
         self.start_button.setText(self.t("start"))
         self.no_followers_button.setText(self.t("no_followers_process"))
+        self.no_followers_button.setToolTip(self.t("no_followers_process_tooltip"))
         self.unfollow_process_button.setText(self.t("unfollow_process"))
+        self.unfollow_process_button.setToolTip(self.t("unfollow_process_tooltip"))
         self.stop_button.setText(self.t("stop"))
+        self.menu_button.setToolTip(self.t("more_options"))
         self.export_button.setText(self.t("export"))
         self.stat_labels[0].setText(self.t("followers"))
         self.stat_labels[1].setText(self.t("following"))
@@ -829,7 +989,10 @@ class MainWindow(QMainWindow):
             "unfollow": self.unfollow_process_button,
         }
         for mode, button in selected.items():
-            button.setObjectName("startButton" if mode == self.selected_process_mode else "secondaryButton")
+            is_selected = mode == self.selected_process_mode
+            button.setChecked(is_selected)
+            button.setProperty("selected", is_selected)
+            button.setAccessibleName(self.t(f"{mode}_process"))
             button.style().unpolish(button)
             button.style().polish(button)
 
@@ -890,6 +1053,11 @@ class MainWindow(QMainWindow):
         self.browser_toggle_button.setText(self._browser_toggle_text())
         self.browser_toggle_button.setIcon(self._eye_icon(visible))
         self.browser_toggle_button.setIconSize(QSize(18, 18))
+        self.browser_toggle_button.setChecked(visible)
+        self.browser_toggle_button.setProperty("active", visible)
+        self.browser_toggle_button.setToolTip(self.t("hide_browser_tooltip" if visible else "show_browser_tooltip"))
+        self.browser_toggle_button.style().unpolish(self.browser_toggle_button)
+        self.browser_toggle_button.style().polish(self.browser_toggle_button)
 
     def _eye_icon(self, active=False):
         pixmap = QPixmap(20, 20)
@@ -906,6 +1074,59 @@ class MainWindow(QMainWindow):
         if active:
             painter.setPen(QPen(QColor("#3C8B6D"), 2.0))
             painter.drawLine(15, 4, 18, 7)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _menu_icon(self):
+        pixmap = QPixmap(20, 20)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor("#B9C2C8"))
+        painter.setPen(Qt.NoPen)
+        for x in (5, 10, 15):
+            painter.drawEllipse(x - 1, 9, 2, 2)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _settings_icon(self):
+        pixmap = QPixmap(20, 20)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#C9D0D5"), 1.8))
+        painter.setBrush(QColor(0, 0, 0, 0))
+        painter.drawEllipse(5, 5, 10, 10)
+        painter.drawLine(10, 1, 10, 4)
+        painter.drawLine(10, 16, 10, 19)
+        painter.drawLine(1, 10, 4, 10)
+        painter.drawLine(16, 10, 19, 10)
+        painter.setBrush(QColor("#5FAF86"))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(8, 8, 4, 4)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _logs_icon(self):
+        pixmap = QPixmap(20, 20)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#C9D0D5"), 1.7))
+        painter.drawRoundedRect(4, 3, 12, 14, 2, 2)
+        for y in (7, 10, 13):
+            painter.drawLine(7, y, 13, y)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _clear_icon(self):
+        pixmap = QPixmap(20, 20)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#D76B63"), 1.8))
+        painter.drawLine(6, 6, 14, 14)
+        painter.drawLine(14, 6, 6, 14)
         painter.end()
         return QIcon(pixmap)
 
@@ -1030,14 +1251,18 @@ class UnfollowSelectionDialog(QDialog):
 
 
 class SecurityCodeDialog(QDialog):
+    resend_requested = Signal()
+    RESEND_SECONDS = 60
+
     def __init__(self, translate, parent=None):
         super().__init__(parent)
         self.translate = translate
         self.security_code = None
+        self._resend_seconds_remaining = self.RESEND_SECONDS
         self.setWindowTitle(self.translate("security_code_required"))
-        self.setMinimumSize(420, 280)
+        self.setMinimumSize(440, 340)
         self.setMaximumWidth(520)
-        self.setModal(True)
+        self.setModal(False)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 28, 28, 28)
@@ -1086,9 +1311,22 @@ class SecurityCodeDialog(QDialog):
         self.visibility_button.clicked.connect(self.toggle_visibility)
         code_layout.addWidget(self.visibility_button)
         layout.addLayout(code_layout)
-        
-        layout.addStretch()
-        
+
+        self.resend_status = QLabel("")
+        self.resend_status.setObjectName("sessionStatus")
+        self.resend_status.setWordWrap(True)
+        layout.addWidget(self.resend_status)
+
+        self.resend_button = QPushButton("")
+        self.resend_button.setObjectName("secondaryButton")
+        self.resend_button.clicked.connect(self.request_new_code)
+        layout.addWidget(self.resend_button)
+
+        self.resend_timer = QTimer(self)
+        self.resend_timer.setInterval(1000)
+        self.resend_timer.timeout.connect(self._tick_resend_countdown)
+        self._start_resend_countdown()
+
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
         submit_button = buttons.addButton(self.translate("save"), QDialogButtonBox.AcceptRole)
@@ -1099,6 +1337,39 @@ class SecurityCodeDialog(QDialog):
         # Set focus to input
         self.code_input.setFocus()
         self.code_input.returnPressed.connect(self.submit_code)
+
+    def request_new_code(self):
+        if not self.resend_button.isEnabled():
+            return
+        self.resend_requested.emit()
+        self._start_resend_countdown()
+
+    def _start_resend_countdown(self):
+        self._resend_seconds_remaining = self.RESEND_SECONDS
+        self.resend_button.setEnabled(False)
+        self._refresh_resend_state()
+        self.resend_timer.start()
+
+    def _tick_resend_countdown(self):
+        self._resend_seconds_remaining = max(0, self._resend_seconds_remaining - 1)
+        self._refresh_resend_state()
+        if self._resend_seconds_remaining == 0:
+            self.resend_timer.stop()
+
+    def _refresh_resend_state(self):
+        if self._resend_seconds_remaining > 0:
+            dots = "." * ((self.RESEND_SECONDS - self._resend_seconds_remaining) % 4)
+            self.resend_status.setText(
+                self.translate("resend_security_code_countdown").format(seconds=self._resend_seconds_remaining) + dots
+            )
+            self.resend_button.setVisible(False)
+            self.resend_button.setEnabled(False)
+            return
+
+        self.resend_status.setText(self.translate("resend_security_code_ready"))
+        self.resend_button.setText(self.translate("resend_security_code"))
+        self.resend_button.setVisible(True)
+        self.resend_button.setEnabled(True)
     
     def toggle_visibility(self):
         if self.visibility_button.isChecked():
@@ -1137,21 +1408,35 @@ class SecurityCodeDialog(QDialog):
         painter.end()
         return QIcon(pixmap)
 
-
 class ConfigDialog(QDialog):
-    def __init__(self, translate, export_file_path, logs_dir, parent=None):
+    def __init__(self, translate, export_file_path, logs_dir, language, parent=None):
         super().__init__(parent)
         self.translate = translate
+        self._current_language = language or "es"
         self.setWindowTitle(self.translate("config"))
-        self.setMinimumSize(620, 220)
+        self.setMinimumSize(520, 300)
+        self.resize(680, 340)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 18)
+        layout.setSpacing(14)
 
         form = QGridLayout()
         form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(10)
+        form.setVerticalSpacing(12)
+
+        language_label = QLabel(self.translate("application_language"))
+        language_label.setObjectName("statLabel")
+        self.language_input = QComboBox()
+        self.language_input.setObjectName("languageCombo")
+        self.language_input.setIconSize(QSize(22, 15))
+        self.language_input.addItem(QIcon(resource_path("assets/flag-es.svg")), self.translate("spanish"), "es")
+        self.language_input.addItem(QIcon(resource_path("assets/flag-gb.svg")), self.translate("english"), "en")
+        selected_language = max(0, self.language_input.findData(language or "es"))
+        self.language_input.setCurrentIndex(selected_language)
+        self.language_input.currentIndexChanged.connect(self._refresh_language_save_button)
+        form.addWidget(language_label, 0, 0, 1, 2)
+        form.addWidget(self.language_input, 1, 0, 1, 2)
 
         export_label = QLabel(self.translate("export_file"))
         export_label.setObjectName("statLabel")
@@ -1159,9 +1444,9 @@ class ConfigDialog(QDialog):
         export_button = QPushButton(self.translate("browse"))
         export_button.setObjectName("secondaryButton")
         export_button.clicked.connect(self.browse_export_file)
-        form.addWidget(export_label, 0, 0)
-        form.addWidget(self.export_input, 1, 0)
-        form.addWidget(export_button, 1, 1)
+        form.addWidget(export_label, 2, 0, 1, 2)
+        form.addWidget(self.export_input, 3, 0)
+        form.addWidget(export_button, 3, 1)
 
         logs_label = QLabel(self.translate("logs_directory"))
         logs_label.setObjectName("statLabel")
@@ -1169,16 +1454,28 @@ class ConfigDialog(QDialog):
         logs_button = QPushButton(self.translate("browse"))
         logs_button.setObjectName("secondaryButton")
         logs_button.clicked.connect(self.browse_logs_dir)
-        form.addWidget(logs_label, 2, 0)
-        form.addWidget(self.logs_input, 3, 0)
-        form.addWidget(logs_button, 3, 1)
+        form.addWidget(logs_label, 4, 0, 1, 2)
+        form.addWidget(self.logs_input, 5, 0)
+        form.addWidget(logs_button, 5, 1)
         form.setColumnStretch(0, 1)
         layout.addLayout(form)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.save_button = buttons.addButton("", QDialogButtonBox.AcceptRole)
+        self.save_button.clicked.connect(self.accept)
+        self.cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        if self.cancel_button:
+            self.cancel_button.setText(self._config_t("cancel"))
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._refresh_language_save_button()
+
+    def _config_t(self, key):
+        return TRANSLATIONS.get(self._current_language, TRANSLATIONS["en"]).get(key, key)
+
+    def _refresh_language_save_button(self):
+        self._current_language = self.language_input.currentData() or "es"
+        self.save_button.setText(self._config_t("save"))
 
     def browse_export_file(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1202,7 +1499,8 @@ class ConfigDialog(QDialog):
     def values(self):
         export_file_path = self.export_input.text().strip() or "non_followers.txt"
         logs_dir = self.logs_input.text().strip() or "logs"
-        return export_file_path, logs_dir
+        language = self.language_input.currentData() or "es"
+        return export_file_path, logs_dir, language
 
 
 class LogsDialog(QDialog):

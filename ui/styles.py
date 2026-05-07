@@ -92,6 +92,7 @@ QPushButton {
     padding: 9px 15px;
     font-weight: 650;
     min-height: 18px;
+    min-width: 0px;
 }
 
 QPushButton:hover {
@@ -118,8 +119,63 @@ QPushButton#menuButton {
     background: #20252A;
     color: #B9C2C8;
     border: 1px solid #303841;
-    padding: 6px 11px;
-    min-width: 30px;
+    border-radius: 10px;
+    padding: 7px 9px;
+    min-width: 36px;
+    min-height: 24px;
+}
+
+QPushButton#menuButton:hover {
+    background: #2B3238;
+    border-color: #48525C;
+}
+
+QPushButton#menuButton:pressed {
+    background: #18231E;
+    border-color: #5FAF86;
+}
+
+QFrame#processSwitch {
+    background: #111417;
+    border: 1px solid #303840;
+    border-radius: 11px;
+}
+
+QPushButton#processButton {
+    background: transparent;
+    color: #AEB8BF;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 8px 13px;
+    font-weight: 700;
+    min-height: 20px;
+}
+
+QPushButton#processButton:hover {
+    background: #20262B;
+    color: #E8ECEF;
+    border-color: #2F3840;
+}
+
+QPushButton#processButton:focus {
+    border: 1px solid #5FAF86;
+}
+
+QPushButton#processButton[selected="true"] {
+    background: #2A4338;
+    color: #F4F7F5;
+    border: 1px solid #4EA37F;
+}
+
+QPushButton#processButton[selected="true"]:hover {
+    background: #315143;
+    border-color: #5FAF86;
+}
+
+QPushButton#processButton:disabled {
+    background: transparent;
+    color: #69737B;
+    border-color: transparent;
 }
 
 QPushButton#startButton {
@@ -165,6 +221,22 @@ QPushButton#ghostButton {
     border: 1px solid #343C44;
 }
 
+QPushButton#toggleButton {
+    border-radius: 999px;
+    padding: 8px 13px;
+}
+
+QPushButton#toggleButton[active="true"] {
+    background: #18231E;
+    color: #F4F7F5;
+    border: 1px solid #4EA37F;
+}
+
+QPushButton#toggleButton[active="true"]:hover {
+    background: #20382F;
+    border-color: #5FAF86;
+}
+
 QPushButton#logsButton:hover,
 QPushButton#secondaryButton:hover,
 QPushButton#toggleButton:hover,
@@ -196,6 +268,7 @@ QLineEdit {
     border-radius: 8px;
     color: #EEF2F0;
     padding: 9px 11px;
+    min-width: 0px;
 }
 
 QLineEdit:hover {
@@ -211,6 +284,38 @@ QLineEdit:disabled {
     color: #8C969E;
     background: #1A1E22;
     border-color: #2B3238;
+}
+
+QComboBox {
+    background: #111417;
+    border: 1px solid #303840;
+    border-radius: 8px;
+    color: #EEF2F0;
+    padding: 8px 11px;
+    min-height: 20px;
+}
+
+QComboBox:hover {
+    border-color: #3F4851;
+}
+
+QComboBox:focus {
+    border: 1px solid #5FAF86;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 28px;
+}
+
+QComboBox QAbstractItemView {
+    background: #1B1F23;
+    border: 1px solid #343C44;
+    border-radius: 8px;
+    color: #E8ECEF;
+    selection-background-color: #28342F;
+    selection-color: #F4F7F5;
+    padding: 4px;
 }
 
 QLabel#statusPill,
@@ -236,6 +341,11 @@ QLabel#statLabel {
 }
 
 QLabel#toast {
+    color: #AAB4BA;
+    font-size: 12px;
+}
+
+QLabel#sessionStatus {
     color: #AAB4BA;
     font-size: 12px;
 }
@@ -267,22 +377,37 @@ QProgressBar[running="true"]::chunk {
 QMenu {
     background: #1B1F23;
     border: 1px solid #343C44;
-    border-radius: 8px;
-    padding: 6px;
+    border-radius: 10px;
+    padding: 7px;
 }
 
 QMenu::item {
     color: #E8ECEF;
-    padding: 8px 24px 8px 12px;
-    border-radius: 6px;
+    padding: 9px 28px 9px 10px;
+    border-radius: 7px;
+}
+
+QMenu::icon {
+    padding-left: 6px;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #303840;
+    margin: 6px 8px;
 }
 
 QMenu::item:selected {
-    background: #28342F;
+    background: #24342E;
     color: #F4F7F5;
 }
 
 QScrollArea {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea#sessionScroll {
     background: transparent;
     border: none;
 }
