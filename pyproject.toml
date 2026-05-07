@@ -13,6 +13,9 @@ playwright-stealth = "^2.0.1"
 pyside6 = "^6.11.0"
 
 
+[tool.poetry.group.dev.dependencies]
+pyinstaller = "^6.20.0"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

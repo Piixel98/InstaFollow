@@ -184,14 +184,15 @@ It asks for credentials, the target Instagram username, and 2FA codes directly i
 
 The application can be packaged with PyInstaller. The generated executable will use the values embedded in `config.py`, so update `INSTAGRAM`, `COOKIES_FILE`, and `CHROME_PATH` before building. If you change `config.py` later, rebuild the executable.
 
-1. **Install PyInstaller in the Poetry environment**:
+1. **Install the build dependencies**:
    ```powershell
    poetry add --group dev pyinstaller
    ```
+   PyInstaller installs its Windows helper packages, including `pywin32-ctypes`, automatically.
 
 2. **Build the executable**:
    ```powershell
-   poetry run pyinstaller --noconfirm --clean InstaFollow.spec
+   poetry run pyinstaller --noconfirm --clean --windowed --onefile --name InstaFollow --icon assets\instafollow.ico --add-data "assets;assets" --collect-all PySide6 gui.py
    ```
 
 3. **Run the generated file**:
@@ -218,4 +219,3 @@ The desktop UI embeds only the Playwright-controlled Chrome window inside the ap
 ## Disclaimer
 
 This tool is for educational purposes only. Using automation on Instagram may violate their Terms of Service and could lead to account restrictions or bans. Use it at your own risk. Always use reasonable delays and avoid aggressive unfollowing.
-
